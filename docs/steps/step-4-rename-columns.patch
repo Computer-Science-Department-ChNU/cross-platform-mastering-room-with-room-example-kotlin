@@ -1,0 +1,220 @@
+diff --color -ruN a/shared/src/commonMain/kotlin/ua/edu/chnu/kkn/masteringdb/data/local/AppDatabase.kt b/shared/src/commonMain/kotlin/ua/edu/chnu/kkn/masteringdb/data/local/AppDatabase.kt
+--- a/shared/src/commonMain/kotlin/ua/edu/chnu/kkn/masteringdb/data/local/AppDatabase.kt	2026-11-17 15:53:20
++++ b/shared/src/commonMain/kotlin/ua/edu/chnu/kkn/masteringdb/data/local/AppDatabase.kt	2026-11-17 15:53:20
+@@ -20,11 +20,12 @@
+ 
+ @Database(
+     entities = [TaskEntity::class, CategoryEntity::class, TagEntity::class, TaskTagCrossRef::class],
+-    version = 3,
++    version = 4,
+     exportSchema = true,
+     autoMigrations = [
+         AutoMigration(from = 1, to = 2),
+         AutoMigration(from = 2, to = 3),
++        AutoMigration(from = 3, to = 4, spec = Migration3To4::class),
+     ],
+ )
+ @ConstructedBy(AppDatabaseConstructor::class)
+diff --color -ruN a/shared/src/commonMain/kotlin/ua/edu/chnu/kkn/masteringdb/data/local/Migrations.kt b/shared/src/commonMain/kotlin/ua/edu/chnu/kkn/masteringdb/data/local/Migrations.kt
+--- a/shared/src/commonMain/kotlin/ua/edu/chnu/kkn/masteringdb/data/local/Migrations.kt	1970-01-01 03:00:00
++++ b/shared/src/commonMain/kotlin/ua/edu/chnu/kkn/masteringdb/data/local/Migrations.kt	2026-11-17 15:53:20
+@@ -0,0 +1,12 @@
++package ua.edu.chnu.kkn.masteringdb.data.local
++
++import androidx.room3.RenameColumn
++import androidx.room3.migration.AutoMigrationSpec
++
++/**
++ * 3 -> 4: a rename looks like "drop column + add column" to Room, so it needs a hint.
++ * Room generates the SQL (recreating the table and copying the data) from this spec.
++ */
++@RenameColumn(tableName = "tasks", fromColumnName = "title", toColumnName = "name")
++@RenameColumn(tableName = "tasks", fromColumnName = "description", toColumnName = "notes")
++class Migration3To4 : AutoMigrationSpec
+diff --color -ruN a/shared/src/commonMain/kotlin/ua/edu/chnu/kkn/masteringdb/data/local/entity/TaskEntity.kt b/shared/src/commonMain/kotlin/ua/edu/chnu/kkn/masteringdb/data/local/entity/TaskEntity.kt
+--- a/shared/src/commonMain/kotlin/ua/edu/chnu/kkn/masteringdb/data/local/entity/TaskEntity.kt	2026-11-17 15:53:20
++++ b/shared/src/commonMain/kotlin/ua/edu/chnu/kkn/masteringdb/data/local/entity/TaskEntity.kt	2026-11-17 15:53:20
+@@ -25,9 +25,9 @@
+     @PrimaryKey(autoGenerate = true)
+     val id: Long = 0,
+ 
+-    val title: String,
++    val name: String,
+ 
+-    val description: String? = null,
++    val notes: String? = null,
+ 
+     @ColumnInfo(name = "is_done")
+     val isDone: Boolean = false,
+diff --color -ruN a/shared/src/commonMain/kotlin/ua/edu/chnu/kkn/masteringdb/data/local/mapper/TaskMapper.kt b/shared/src/commonMain/kotlin/ua/edu/chnu/kkn/masteringdb/data/local/mapper/TaskMapper.kt
+--- a/shared/src/commonMain/kotlin/ua/edu/chnu/kkn/masteringdb/data/local/mapper/TaskMapper.kt	2026-11-17 15:53:20
++++ b/shared/src/commonMain/kotlin/ua/edu/chnu/kkn/masteringdb/data/local/mapper/TaskMapper.kt	2026-11-17 15:53:20
+@@ -8,8 +8,8 @@
+ 
+ fun TaskDetails.toModel(): Task = Task(
+     id = task.id,
+-    title = task.title,
+-    description = task.description,
++    title = task.name,
++    description = task.notes,
+     isDone = task.isDone,
+     createdAt = task.createdAt,
+     categoryId = task.categoryId,
+diff --color -ruN a/shared/src/commonMain/kotlin/ua/edu/chnu/kkn/masteringdb/data/repository/RoomTaskRepository.kt b/shared/src/commonMain/kotlin/ua/edu/chnu/kkn/masteringdb/data/repository/RoomTaskRepository.kt
+--- a/shared/src/commonMain/kotlin/ua/edu/chnu/kkn/masteringdb/data/repository/RoomTaskRepository.kt	2026-11-17 15:53:20
++++ b/shared/src/commonMain/kotlin/ua/edu/chnu/kkn/masteringdb/data/repository/RoomTaskRepository.kt	2026-11-17 15:53:20
+@@ -34,8 +34,8 @@
+     override suspend fun addTask(title: String, description: String?, categoryId: Long?, tagIds: Set<Long>): Long =
+         taskDao.insertWithTags(
+             TaskEntity(
+-                title = title,
+-                description = description,
++                name = title,
++                notes = description,
+                 createdAt = clock.now().toEpochMilliseconds(),
+                 categoryId = categoryId,
+             ),
+@@ -44,7 +44,7 @@
+ 
+     override suspend fun updateTask(id: Long, title: String, description: String?, categoryId: Long?, tagIds: Set<Long>) {
+         val task = taskDao.getById(id) ?: return
+-        taskDao.updateWithTags(task.copy(title = title, description = description, categoryId = categoryId), tagIds)
++        taskDao.updateWithTags(task.copy(name = title, notes = description, categoryId = categoryId), tagIds)
+     }
+ 
+     override suspend fun setDone(id: Long, done: Boolean) {
+diff --color -ruN a/shared/src/jvmTest/kotlin/ua/edu/chnu/kkn/masteringdb/data/local/CategoryDaoTest.kt b/shared/src/jvmTest/kotlin/ua/edu/chnu/kkn/masteringdb/data/local/CategoryDaoTest.kt
+--- a/shared/src/jvmTest/kotlin/ua/edu/chnu/kkn/masteringdb/data/local/CategoryDaoTest.kt	2026-11-17 15:53:20
++++ b/shared/src/jvmTest/kotlin/ua/edu/chnu/kkn/masteringdb/data/local/CategoryDaoTest.kt	2026-11-17 15:53:20
+@@ -28,19 +28,19 @@
+     @Test
+     fun categoryWithTasks() = runTest {
+         val work = db.categoryDao().insert(CategoryEntity(name = "Work"))
+-        db.taskDao().insert(TaskEntity(title = "Report", createdAt = 0, categoryId = work))
+-        db.taskDao().insert(TaskEntity(title = "Meeting", createdAt = 1, categoryId = work))
+-        db.taskDao().insert(TaskEntity(title = "No category", createdAt = 2))
++        db.taskDao().insert(TaskEntity(name = "Report", createdAt = 0, categoryId = work))
++        db.taskDao().insert(TaskEntity(name = "Meeting", createdAt = 1, categoryId = work))
++        db.taskDao().insert(TaskEntity(name = "No category", createdAt = 2))
+ 
+         val result = db.categoryDao().observeCategoryWithTasks(work).first()
+         assertEquals("Work", result?.category?.name)
+-        assertEquals(setOf("Report", "Meeting"), result?.tasks?.map { it.title }?.toSet())
++        assertEquals(setOf("Report", "Meeting"), result?.tasks?.map { it.name }?.toSet())
+     }
+ 
+     @Test
+     fun deletingCategorySetsTaskCategoryToNull() = runTest {
+         val home = db.categoryDao().insert(CategoryEntity(name = "Home"))
+-        val taskId = db.taskDao().insert(TaskEntity(title = "Clean", createdAt = 0, categoryId = home))
++        val taskId = db.taskDao().insert(TaskEntity(name = "Clean", createdAt = 0, categoryId = home))
+ 
+         db.categoryDao().deleteById(home)
+ 
+diff --color -ruN a/shared/src/jvmTest/kotlin/ua/edu/chnu/kkn/masteringdb/data/local/MigrationTest.kt b/shared/src/jvmTest/kotlin/ua/edu/chnu/kkn/masteringdb/data/local/MigrationTest.kt
+--- a/shared/src/jvmTest/kotlin/ua/edu/chnu/kkn/masteringdb/data/local/MigrationTest.kt	2026-11-17 15:53:20
++++ b/shared/src/jvmTest/kotlin/ua/edu/chnu/kkn/masteringdb/data/local/MigrationTest.kt	2026-11-17 15:53:20
+@@ -61,6 +61,30 @@
+         connection.querySingleRow("SELECT category_id FROM tasks WHERE id = 1") { assertEquals(1, getLong(0)) }
+         connection.close()
+     }
++
++    @Test
++    fun migrate3To4_renamesColumnsAndKeepsRelations() = runTest {
++        helper.createDatabase(3).apply {
++            execSQL("INSERT INTO categories (id, name) VALUES (1, 'Home')")
++            execSQL("INSERT INTO tasks (id, title, description, is_done, created_at, category_id) VALUES (1, 'Clean', 'Kitchen', 1, 100, 1)")
++            execSQL("INSERT INTO tags (id, name) VALUES (1, 'weekly')")
++            execSQL("INSERT INTO task_tags (task_id, tag_id) VALUES (1, 1)")
++            close()
++        }
++
++        val connection = helper.runMigrationsAndValidate(4)
++
++        connection.querySingleRow("SELECT name, notes, is_done, created_at, category_id FROM tasks WHERE id = 1") {
++            assertEquals("Clean", getText(0))
++            assertEquals("Kitchen", getText(1))
++            assertEquals(1, getLong(2))
++            assertEquals(100, getLong(3))
++            assertEquals(1, getLong(4))
++        }
++        // The table is recreated during the migration - the links in task_tags must survive
++        connection.querySingleRow("SELECT COUNT(*) FROM task_tags WHERE task_id = 1") { assertEquals(1, getLong(0)) }
++        connection.close()
++    }
+ }
+ 
+ internal fun SQLiteConnection.querySingleRow(sql: String, block: androidx.sqlite.SQLiteStatement.() -> Unit) {
+diff --color -ruN a/shared/src/jvmTest/kotlin/ua/edu/chnu/kkn/masteringdb/data/local/TagDaoTest.kt b/shared/src/jvmTest/kotlin/ua/edu/chnu/kkn/masteringdb/data/local/TagDaoTest.kt
+--- a/shared/src/jvmTest/kotlin/ua/edu/chnu/kkn/masteringdb/data/local/TagDaoTest.kt	2026-11-17 15:53:20
++++ b/shared/src/jvmTest/kotlin/ua/edu/chnu/kkn/masteringdb/data/local/TagDaoTest.kt	2026-11-17 15:53:20
+@@ -28,7 +28,7 @@
+     fun taskWithTags() = runTest {
+         val urgent = db.tagDao().insert(TagEntity(name = "urgent"))
+         val home = db.tagDao().insert(TagEntity(name = "home"))
+-        val taskId = db.taskDao().insertWithTags(TaskEntity(title = "Fix tap", createdAt = 0), setOf(urgent, home))
++        val taskId = db.taskDao().insertWithTags(TaskEntity(name = "Fix tap", createdAt = 0), setOf(urgent, home))
+ 
+         val details = db.taskDao().observeTaskWithTags(taskId).first()
+         assertEquals(setOf("urgent", "home"), details?.tags?.map { it.name }?.toSet())
+@@ -38,20 +38,20 @@
+     fun tasksByTag() = runTest {
+         val urgent = db.tagDao().insert(TagEntity(name = "urgent"))
+         val dao = db.taskDao()
+-        val first = dao.insertWithTags(TaskEntity(title = "First", createdAt = 1), setOf(urgent))
+-        dao.insertWithTags(TaskEntity(title = "Second", createdAt = 2), setOf(urgent))
+-        dao.insertWithTags(TaskEntity(title = "Untagged", createdAt = 3), emptySet())
++        val first = dao.insertWithTags(TaskEntity(name = "First", createdAt = 1), setOf(urgent))
++        dao.insertWithTags(TaskEntity(name = "Second", createdAt = 2), setOf(urgent))
++        dao.insertWithTags(TaskEntity(name = "Untagged", createdAt = 3), emptySet())
+         dao.setDone(first, true)
+ 
+-        assertEquals(listOf("Second", "First"), dao.observeByTag(urgent, done = null).first().map { it.task.title })
+-        assertEquals(listOf("First"), dao.observeByTag(urgent, done = true).first().map { it.task.title })
++        assertEquals(listOf("Second", "First"), dao.observeByTag(urgent, done = null).first().map { it.task.name })
++        assertEquals(listOf("First"), dao.observeByTag(urgent, done = true).first().map { it.task.name })
+     }
+ 
+     @Test
+     fun setTagsReplacesLinksAndDeletingTagCascades() = runTest {
+         val a = db.tagDao().insert(TagEntity(name = "a"))
+         val b = db.tagDao().insert(TagEntity(name = "b"))
+-        val taskId = db.taskDao().insertWithTags(TaskEntity(title = "Task", createdAt = 0), setOf(a))
++        val taskId = db.taskDao().insertWithTags(TaskEntity(name = "Task", createdAt = 0), setOf(a))
+ 
+         db.taskDao().setTags(taskId, setOf(b))
+         assertEquals(listOf("b"), db.taskDao().observeTaskWithTags(taskId).first()?.tags?.map { it.name })
+diff --color -ruN a/shared/src/jvmTest/kotlin/ua/edu/chnu/kkn/masteringdb/data/local/TaskDaoTest.kt b/shared/src/jvmTest/kotlin/ua/edu/chnu/kkn/masteringdb/data/local/TaskDaoTest.kt
+--- a/shared/src/jvmTest/kotlin/ua/edu/chnu/kkn/masteringdb/data/local/TaskDaoTest.kt	2026-11-17 15:53:20
++++ b/shared/src/jvmTest/kotlin/ua/edu/chnu/kkn/masteringdb/data/local/TaskDaoTest.kt	2026-11-17 15:53:20
+@@ -27,24 +27,24 @@
+     @Test
+     fun insertAndRead() = runTest {
+         val dao = db.taskDao()
+-        val id = dao.insert(TaskEntity(title = "Test", createdAt = 0))
++        val id = dao.insert(TaskEntity(name = "Test", createdAt = 0))
+ 
+-        assertEquals("Test", dao.getById(id)?.title)
++        assertEquals("Test", dao.getById(id)?.name)
+         assertEquals(1, dao.observeAll().first().size)
+     }
+ 
+     @Test
+     fun setDoneAndDeleteCompleted() = runTest {
+         val dao = db.taskDao()
+-        val first = dao.insert(TaskEntity(title = "First", createdAt = 1))
+-        dao.insert(TaskEntity(title = "Second", createdAt = 2))
++        val first = dao.insert(TaskEntity(name = "First", createdAt = 1))
++        dao.insert(TaskEntity(name = "Second", createdAt = 2))
+ 
+         dao.setDone(first, true)
+         assertEquals(1, dao.observeActiveCount().first())
+-        assertEquals(listOf("First"), dao.observeByStatus(done = true).first().map { it.task.title })
++        assertEquals(listOf("First"), dao.observeByStatus(done = true).first().map { it.task.name })
+ 
+         dao.deleteCompleted()
+         assertNull(dao.getById(first))
+-        assertEquals(listOf("Second"), dao.observeAll().first().map { it.task.title })
++        assertEquals(listOf("Second"), dao.observeAll().first().map { it.task.name })
+     }
+ }

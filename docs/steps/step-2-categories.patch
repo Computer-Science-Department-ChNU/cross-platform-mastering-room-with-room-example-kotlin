@@ -1,0 +1,917 @@
+diff --color -ruN a/shared/src/commonMain/kotlin/ua/edu/chnu/kkn/masteringdb/data/local/AppDatabase.kt b/shared/src/commonMain/kotlin/ua/edu/chnu/kkn/masteringdb/data/local/AppDatabase.kt
+--- a/shared/src/commonMain/kotlin/ua/edu/chnu/kkn/masteringdb/data/local/AppDatabase.kt	2026-11-17 15:53:20
++++ b/shared/src/commonMain/kotlin/ua/edu/chnu/kkn/masteringdb/data/local/AppDatabase.kt	2026-11-17 15:53:20
+@@ -1,5 +1,6 @@
+ package ua.edu.chnu.kkn.masteringdb.data.local
+ 
++import androidx.room3.AutoMigration
+ import androidx.room3.ConstructedBy
+ import androidx.room3.Database
+ import androidx.room3.RoomDatabase
+@@ -7,19 +8,25 @@
+ import androidx.sqlite.driver.bundled.BundledSQLiteDriver
+ import kotlinx.coroutines.Dispatchers
+ import kotlinx.coroutines.IO
++import ua.edu.chnu.kkn.masteringdb.data.local.dao.CategoryDao
+ import ua.edu.chnu.kkn.masteringdb.data.local.dao.TaskDao
++import ua.edu.chnu.kkn.masteringdb.data.local.entity.CategoryEntity
+ import ua.edu.chnu.kkn.masteringdb.data.local.entity.TaskEntity
+ 
+ const val DATABASE_FILE_NAME = "mastering_db.db"
+ 
+ @Database(
+-    entities = [TaskEntity::class],
+-    version = 1,
++    entities = [TaskEntity::class, CategoryEntity::class],
++    version = 2,
+     exportSchema = true,
++    autoMigrations = [
++        AutoMigration(from = 1, to = 2),
++    ],
+ )
+ @ConstructedBy(AppDatabaseConstructor::class)
+ abstract class AppDatabase : RoomDatabase() {
+     abstract fun taskDao(): TaskDao
++    abstract fun categoryDao(): CategoryDao
+ }
+ 
+ // Room's compiler generates the `actual` implementation for each platform.
+diff --color -ruN a/shared/src/commonMain/kotlin/ua/edu/chnu/kkn/masteringdb/data/local/dao/CategoryDao.kt b/shared/src/commonMain/kotlin/ua/edu/chnu/kkn/masteringdb/data/local/dao/CategoryDao.kt
+--- a/shared/src/commonMain/kotlin/ua/edu/chnu/kkn/masteringdb/data/local/dao/CategoryDao.kt	1970-01-01 03:00:00
++++ b/shared/src/commonMain/kotlin/ua/edu/chnu/kkn/masteringdb/data/local/dao/CategoryDao.kt	2026-11-17 15:53:20
+@@ -0,0 +1,32 @@
++package ua.edu.chnu.kkn.masteringdb.data.local.dao
++
++import androidx.room3.Dao
++import androidx.room3.Insert
++import androidx.room3.OnConflictStrategy
++import androidx.room3.Query
++import androidx.room3.Transaction
++import kotlinx.coroutines.flow.Flow
++import ua.edu.chnu.kkn.masteringdb.data.local.entity.CategoryEntity
++import ua.edu.chnu.kkn.masteringdb.data.local.relation.CategoryWithTasks
++
++@Dao
++interface CategoryDao {
++
++    /** Returns -1 when a category with the same name already exists. */
++    @Insert(onConflict = OnConflictStrategy.IGNORE)
++    suspend fun insert(category: CategoryEntity): Long
++
++    @Query("SELECT * FROM categories ORDER BY name")
++    fun observeAll(): Flow<List<CategoryEntity>>
++
++    @Transaction
++    @Query("SELECT * FROM categories ORDER BY name")
++    fun observeCategoriesWithTasks(): Flow<List<CategoryWithTasks>>
++
++    @Transaction
++    @Query("SELECT * FROM categories WHERE id = :id")
++    fun observeCategoryWithTasks(id: Long): Flow<CategoryWithTasks?>
++
++    @Query("DELETE FROM categories WHERE id = :id")
++    suspend fun deleteById(id: Long): Int
++}
+diff --color -ruN a/shared/src/commonMain/kotlin/ua/edu/chnu/kkn/masteringdb/data/local/entity/CategoryEntity.kt b/shared/src/commonMain/kotlin/ua/edu/chnu/kkn/masteringdb/data/local/entity/CategoryEntity.kt
+--- a/shared/src/commonMain/kotlin/ua/edu/chnu/kkn/masteringdb/data/local/entity/CategoryEntity.kt	1970-01-01 03:00:00
++++ b/shared/src/commonMain/kotlin/ua/edu/chnu/kkn/masteringdb/data/local/entity/CategoryEntity.kt	2026-11-17 15:53:20
+@@ -0,0 +1,16 @@
++package ua.edu.chnu.kkn.masteringdb.data.local.entity
++
++import androidx.room3.Entity
++import androidx.room3.Index
++import androidx.room3.PrimaryKey
++
++@Entity(
++    tableName = "categories",
++    indices = [Index(value = ["name"], unique = true)],
++)
++data class CategoryEntity(
++    @PrimaryKey(autoGenerate = true)
++    val id: Long = 0,
++
++    val name: String,
++)
+diff --color -ruN a/shared/src/commonMain/kotlin/ua/edu/chnu/kkn/masteringdb/data/local/entity/TaskEntity.kt b/shared/src/commonMain/kotlin/ua/edu/chnu/kkn/masteringdb/data/local/entity/TaskEntity.kt
+--- a/shared/src/commonMain/kotlin/ua/edu/chnu/kkn/masteringdb/data/local/entity/TaskEntity.kt	2026-11-17 15:53:20
++++ b/shared/src/commonMain/kotlin/ua/edu/chnu/kkn/masteringdb/data/local/entity/TaskEntity.kt	2026-11-17 15:53:20
+@@ -2,12 +2,24 @@
+ 
+ import androidx.room3.ColumnInfo
+ import androidx.room3.Entity
++import androidx.room3.ForeignKey
+ import androidx.room3.Index
+ import androidx.room3.PrimaryKey
+ 
+ @Entity(
+     tableName = "tasks",
+-    indices = [Index(value = ["is_done"])],
++    indices = [
++        Index(value = ["is_done"]),
++        Index(value = ["category_id"]),
++    ],
++    foreignKeys = [
++        ForeignKey(
++            entity = CategoryEntity::class,
++            parentColumns = ["id"],
++            childColumns = ["category_id"],
++            onDelete = ForeignKey.SET_NULL,
++        ),
++    ],
+ )
+ data class TaskEntity(
+     @PrimaryKey(autoGenerate = true)
+@@ -22,4 +34,7 @@
+ 
+     @ColumnInfo(name = "created_at")
+     val createdAt: Long,
++
++    @ColumnInfo(name = "category_id")
++    val categoryId: Long? = null,
+ )
+diff --color -ruN a/shared/src/commonMain/kotlin/ua/edu/chnu/kkn/masteringdb/data/local/mapper/CategoryMapper.kt b/shared/src/commonMain/kotlin/ua/edu/chnu/kkn/masteringdb/data/local/mapper/CategoryMapper.kt
+--- a/shared/src/commonMain/kotlin/ua/edu/chnu/kkn/masteringdb/data/local/mapper/CategoryMapper.kt	1970-01-01 03:00:00
++++ b/shared/src/commonMain/kotlin/ua/edu/chnu/kkn/masteringdb/data/local/mapper/CategoryMapper.kt	2026-11-17 15:53:20
+@@ -0,0 +1,10 @@
++package ua.edu.chnu.kkn.masteringdb.data.local.mapper
++
++import ua.edu.chnu.kkn.masteringdb.data.local.relation.CategoryWithTasks
++import ua.edu.chnu.kkn.masteringdb.data.model.Category
++
++fun CategoryWithTasks.toModel(): Category = Category(
++    id = category.id,
++    name = category.name,
++    taskCount = tasks.size,
++)
+diff --color -ruN a/shared/src/commonMain/kotlin/ua/edu/chnu/kkn/masteringdb/data/local/mapper/TaskMapper.kt b/shared/src/commonMain/kotlin/ua/edu/chnu/kkn/masteringdb/data/local/mapper/TaskMapper.kt
+--- a/shared/src/commonMain/kotlin/ua/edu/chnu/kkn/masteringdb/data/local/mapper/TaskMapper.kt	2026-11-17 15:53:20
++++ b/shared/src/commonMain/kotlin/ua/edu/chnu/kkn/masteringdb/data/local/mapper/TaskMapper.kt	2026-11-17 15:53:20
+@@ -9,4 +9,5 @@
+     description = description,
+     isDone = isDone,
+     createdAt = createdAt,
++    categoryId = categoryId,
+ )
+diff --color -ruN a/shared/src/commonMain/kotlin/ua/edu/chnu/kkn/masteringdb/data/local/relation/CategoryWithTasks.kt b/shared/src/commonMain/kotlin/ua/edu/chnu/kkn/masteringdb/data/local/relation/CategoryWithTasks.kt
+--- a/shared/src/commonMain/kotlin/ua/edu/chnu/kkn/masteringdb/data/local/relation/CategoryWithTasks.kt	1970-01-01 03:00:00
++++ b/shared/src/commonMain/kotlin/ua/edu/chnu/kkn/masteringdb/data/local/relation/CategoryWithTasks.kt	2026-11-17 15:53:20
+@@ -0,0 +1,16 @@
++package ua.edu.chnu.kkn.masteringdb.data.local.relation
++
++import androidx.room3.Embedded
++import androidx.room3.Relation
++import ua.edu.chnu.kkn.masteringdb.data.local.entity.CategoryEntity
++import ua.edu.chnu.kkn.masteringdb.data.local.entity.TaskEntity
++
++/** One-to-many: a category with all of its tasks. Not an entity. */
++data class CategoryWithTasks(
++    @Embedded val category: CategoryEntity,
++    @Relation(
++        parentColumns = ["id"],
++        entityColumns = ["category_id"],
++    )
++    val tasks: List<TaskEntity>,
++)
+diff --color -ruN a/shared/src/commonMain/kotlin/ua/edu/chnu/kkn/masteringdb/data/model/Category.kt b/shared/src/commonMain/kotlin/ua/edu/chnu/kkn/masteringdb/data/model/Category.kt
+--- a/shared/src/commonMain/kotlin/ua/edu/chnu/kkn/masteringdb/data/model/Category.kt	1970-01-01 03:00:00
++++ b/shared/src/commonMain/kotlin/ua/edu/chnu/kkn/masteringdb/data/model/Category.kt	2026-11-17 15:53:20
+@@ -0,0 +1,7 @@
++package ua.edu.chnu.kkn.masteringdb.data.model
++
++data class Category(
++    val id: Long,
++    val name: String,
++    val taskCount: Int,
++)
+diff --color -ruN a/shared/src/commonMain/kotlin/ua/edu/chnu/kkn/masteringdb/data/model/Task.kt b/shared/src/commonMain/kotlin/ua/edu/chnu/kkn/masteringdb/data/model/Task.kt
+--- a/shared/src/commonMain/kotlin/ua/edu/chnu/kkn/masteringdb/data/model/Task.kt	2026-11-17 15:53:20
++++ b/shared/src/commonMain/kotlin/ua/edu/chnu/kkn/masteringdb/data/model/Task.kt	2026-11-17 15:53:20
+@@ -7,6 +7,7 @@
+     val description: String?,
+     val isDone: Boolean,
+     val createdAt: Long,
++    val categoryId: Long?,
+ )
+ 
+ enum class TaskFilter { ALL, ACTIVE, DONE }
+diff --color -ruN a/shared/src/commonMain/kotlin/ua/edu/chnu/kkn/masteringdb/data/repository/CategoryRepository.kt b/shared/src/commonMain/kotlin/ua/edu/chnu/kkn/masteringdb/data/repository/CategoryRepository.kt
+--- a/shared/src/commonMain/kotlin/ua/edu/chnu/kkn/masteringdb/data/repository/CategoryRepository.kt	1970-01-01 03:00:00
++++ b/shared/src/commonMain/kotlin/ua/edu/chnu/kkn/masteringdb/data/repository/CategoryRepository.kt	2026-11-17 15:53:20
+@@ -0,0 +1,11 @@
++package ua.edu.chnu.kkn.masteringdb.data.repository
++
++import kotlinx.coroutines.flow.Flow
++import ua.edu.chnu.kkn.masteringdb.data.model.Category
++
++interface CategoryRepository {
++    fun observeCategories(): Flow<List<Category>>
++
++    suspend fun addCategory(name: String)
++    suspend fun deleteCategory(id: Long)
++}
+diff --color -ruN a/shared/src/commonMain/kotlin/ua/edu/chnu/kkn/masteringdb/data/repository/RoomCategoryRepository.kt b/shared/src/commonMain/kotlin/ua/edu/chnu/kkn/masteringdb/data/repository/RoomCategoryRepository.kt
+--- a/shared/src/commonMain/kotlin/ua/edu/chnu/kkn/masteringdb/data/repository/RoomCategoryRepository.kt	1970-01-01 03:00:00
++++ b/shared/src/commonMain/kotlin/ua/edu/chnu/kkn/masteringdb/data/repository/RoomCategoryRepository.kt	2026-11-17 15:53:20
+@@ -0,0 +1,26 @@
++package ua.edu.chnu.kkn.masteringdb.data.repository
++
++import kotlinx.coroutines.flow.Flow
++import kotlinx.coroutines.flow.map
++import ua.edu.chnu.kkn.masteringdb.data.local.dao.CategoryDao
++import ua.edu.chnu.kkn.masteringdb.data.local.entity.CategoryEntity
++import ua.edu.chnu.kkn.masteringdb.data.local.mapper.toModel
++import ua.edu.chnu.kkn.masteringdb.data.local.relation.CategoryWithTasks
++import ua.edu.chnu.kkn.masteringdb.data.model.Category
++
++class RoomCategoryRepository(
++    private val categoryDao: CategoryDao,
++) : CategoryRepository {
++
++    override fun observeCategories(): Flow<List<Category>> =
++        categoryDao.observeCategoriesWithTasks().map { list -> list.map(CategoryWithTasks::toModel) }
++
++    override suspend fun addCategory(name: String) {
++        categoryDao.insert(CategoryEntity(name = name))
++    }
++
++    // Tasks of the deleted category keep existing: the FK sets their category_id to NULL
++    override suspend fun deleteCategory(id: Long) {
++        categoryDao.deleteById(id)
++    }
++}
+diff --color -ruN a/shared/src/commonMain/kotlin/ua/edu/chnu/kkn/masteringdb/data/repository/RoomTaskRepository.kt b/shared/src/commonMain/kotlin/ua/edu/chnu/kkn/masteringdb/data/repository/RoomTaskRepository.kt
+--- a/shared/src/commonMain/kotlin/ua/edu/chnu/kkn/masteringdb/data/repository/RoomTaskRepository.kt	2026-11-17 15:53:20
++++ b/shared/src/commonMain/kotlin/ua/edu/chnu/kkn/masteringdb/data/repository/RoomTaskRepository.kt	2026-11-17 15:53:20
+@@ -25,18 +25,19 @@
+ 
+     override fun observeActiveCount(): Flow<Int> = taskDao.observeActiveCount()
+ 
+-    override suspend fun addTask(title: String, description: String?): Long =
++    override suspend fun addTask(title: String, description: String?, categoryId: Long?): Long =
+         taskDao.insert(
+             TaskEntity(
+                 title = title,
+                 description = description,
+                 createdAt = clock.now().toEpochMilliseconds(),
++                categoryId = categoryId,
+             )
+         )
+ 
+-    override suspend fun updateTask(id: Long, title: String, description: String?) {
++    override suspend fun updateTask(id: Long, title: String, description: String?, categoryId: Long?) {
+         val task = taskDao.getById(id) ?: return
+-        taskDao.update(task.copy(title = title, description = description))
++        taskDao.update(task.copy(title = title, description = description, categoryId = categoryId))
+     }
+ 
+     override suspend fun setDone(id: Long, done: Boolean) {
+diff --color -ruN a/shared/src/commonMain/kotlin/ua/edu/chnu/kkn/masteringdb/data/repository/TaskRepository.kt b/shared/src/commonMain/kotlin/ua/edu/chnu/kkn/masteringdb/data/repository/TaskRepository.kt
+--- a/shared/src/commonMain/kotlin/ua/edu/chnu/kkn/masteringdb/data/repository/TaskRepository.kt	2026-11-17 15:53:20
++++ b/shared/src/commonMain/kotlin/ua/edu/chnu/kkn/masteringdb/data/repository/TaskRepository.kt	2026-11-17 15:53:20
+@@ -8,8 +8,8 @@
+     fun observeTasks(filter: TaskFilter): Flow<List<Task>>
+     fun observeActiveCount(): Flow<Int>
+ 
+-    suspend fun addTask(title: String, description: String?): Long
+-    suspend fun updateTask(id: Long, title: String, description: String?)
++    suspend fun addTask(title: String, description: String?, categoryId: Long?): Long
++    suspend fun updateTask(id: Long, title: String, description: String?, categoryId: Long?)
+     suspend fun setDone(id: Long, done: Boolean)
+     suspend fun deleteTask(id: Long)
+     suspend fun clearCompleted()
+diff --color -ruN a/shared/src/commonMain/kotlin/ua/edu/chnu/kkn/masteringdb/di/Koin.kt b/shared/src/commonMain/kotlin/ua/edu/chnu/kkn/masteringdb/di/Koin.kt
+--- a/shared/src/commonMain/kotlin/ua/edu/chnu/kkn/masteringdb/di/Koin.kt	2026-11-17 15:53:20
++++ b/shared/src/commonMain/kotlin/ua/edu/chnu/kkn/masteringdb/di/Koin.kt	2026-11-17 15:53:20
+@@ -7,6 +7,8 @@
+ import org.koin.dsl.module
+ import ua.edu.chnu.kkn.masteringdb.data.local.AppDatabase
+ import ua.edu.chnu.kkn.masteringdb.data.local.getRoomDatabase
++import ua.edu.chnu.kkn.masteringdb.data.repository.CategoryRepository
++import ua.edu.chnu.kkn.masteringdb.data.repository.RoomCategoryRepository
+ import ua.edu.chnu.kkn.masteringdb.data.repository.RoomTaskRepository
+ import ua.edu.chnu.kkn.masteringdb.data.repository.TaskRepository
+ import ua.edu.chnu.kkn.masteringdb.ui.tasks.TasksViewModel
+@@ -17,7 +19,9 @@
+ val dataModule = module {
+     single { getRoomDatabase(get()) }
+     single { get<AppDatabase>().taskDao() }
++    single { get<AppDatabase>().categoryDao() }
+     single<TaskRepository> { RoomTaskRepository(get()) }
++    single<CategoryRepository> { RoomCategoryRepository(get()) }
+ }
+ 
+ val uiModule = module {
+diff --color -ruN a/shared/src/commonMain/kotlin/ua/edu/chnu/kkn/masteringdb/ui/tasks/CategoriesDialog.kt b/shared/src/commonMain/kotlin/ua/edu/chnu/kkn/masteringdb/ui/tasks/CategoriesDialog.kt
+--- a/shared/src/commonMain/kotlin/ua/edu/chnu/kkn/masteringdb/ui/tasks/CategoriesDialog.kt	1970-01-01 03:00:00
++++ b/shared/src/commonMain/kotlin/ua/edu/chnu/kkn/masteringdb/ui/tasks/CategoriesDialog.kt	2026-11-17 15:53:20
+@@ -0,0 +1,66 @@
++package ua.edu.chnu.kkn.masteringdb.ui.tasks
++
++import androidx.compose.foundation.layout.Arrangement
++import androidx.compose.foundation.layout.Column
++import androidx.compose.foundation.layout.Row
++import androidx.compose.foundation.layout.fillMaxWidth
++import androidx.compose.material3.AlertDialog
++import androidx.compose.material3.MaterialTheme
++import androidx.compose.material3.OutlinedTextField
++import androidx.compose.material3.Text
++import androidx.compose.material3.TextButton
++import androidx.compose.runtime.Composable
++import androidx.compose.runtime.getValue
++import androidx.compose.runtime.mutableStateOf
++import androidx.compose.runtime.remember
++import androidx.compose.runtime.setValue
++import androidx.compose.ui.Alignment
++import androidx.compose.ui.Modifier
++import androidx.compose.ui.unit.dp
++import ua.edu.chnu.kkn.masteringdb.data.model.Category
++
++@Composable
++internal fun CategoriesDialog(
++    categories: List<Category>,
++    onAdd: (String) -> Unit,
++    onDelete: (Long) -> Unit,
++    onDismiss: () -> Unit,
++) {
++    var newName by remember { mutableStateOf("") }
++    AlertDialog(
++        onDismissRequest = onDismiss,
++        title = { Text("Categories") },
++        text = {
++            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
++                if (categories.isEmpty()) {
++                    Text("No categories yet", style = MaterialTheme.typography.bodyMedium)
++                }
++                categories.forEach { category ->
++                    Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
++                        Text(
++                            text = "${category.name} — ${category.taskCount} task(s)",
++                            modifier = Modifier.weight(1f),
++                        )
++                        TextButton(onClick = { onDelete(category.id) }) { Text("Delete") }
++                    }
++                }
++                Row(verticalAlignment = Alignment.CenterVertically) {
++                    OutlinedTextField(
++                        value = newName,
++                        onValueChange = { newName = it },
++                        label = { Text("New category") },
++                        singleLine = true,
++                        modifier = Modifier.weight(1f),
++                    )
++                    TextButton(
++                        onClick = { onAdd(newName); newName = "" },
++                        enabled = newName.isNotBlank(),
++                    ) { Text("Add") }
++                }
++            }
++        },
++        confirmButton = {
++            TextButton(onClick = onDismiss) { Text("Done") }
++        },
++    )
++}
+diff --color -ruN a/shared/src/commonMain/kotlin/ua/edu/chnu/kkn/masteringdb/ui/tasks/TaskEditorDialog.kt b/shared/src/commonMain/kotlin/ua/edu/chnu/kkn/masteringdb/ui/tasks/TaskEditorDialog.kt
+--- a/shared/src/commonMain/kotlin/ua/edu/chnu/kkn/masteringdb/ui/tasks/TaskEditorDialog.kt	2026-11-17 15:53:20
++++ b/shared/src/commonMain/kotlin/ua/edu/chnu/kkn/masteringdb/ui/tasks/TaskEditorDialog.kt	2026-11-17 15:53:20
+@@ -3,17 +3,22 @@
+ import androidx.compose.foundation.layout.Arrangement
+ import androidx.compose.foundation.layout.Column
+ import androidx.compose.material3.AlertDialog
++import androidx.compose.material3.FilterChip
++import androidx.compose.material3.MaterialTheme
+ import androidx.compose.material3.OutlinedTextField
+ import androidx.compose.material3.Text
+ import androidx.compose.material3.TextButton
+ import androidx.compose.runtime.Composable
+ import androidx.compose.ui.unit.dp
++import ua.edu.chnu.kkn.masteringdb.data.model.Category
+ 
+ @Composable
+ internal fun TaskEditorDialog(
+     state: TaskEditorState,
++    categories: List<Category>,
+     onTitleChange: (String) -> Unit,
+     onDescriptionChange: (String) -> Unit,
++    onCategoryChange: (Long?) -> Unit,
+     onSave: () -> Unit,
+     onDismiss: () -> Unit,
+ ) {
+@@ -33,6 +38,21 @@
+                     onValueChange = onDescriptionChange,
+                     label = { Text("Description") },
+                 )
++                Text("Category", style = MaterialTheme.typography.labelLarge)
++                ChipRow {
++                    FilterChip(
++                        selected = state.categoryId == null,
++                        onClick = { onCategoryChange(null) },
++                        label = { Text("None") },
++                    )
++                    categories.forEach { category ->
++                        FilterChip(
++                            selected = state.categoryId == category.id,
++                            onClick = { onCategoryChange(category.id) },
++                            label = { Text(category.name) },
++                        )
++                    }
++                }
+             }
+         },
+         confirmButton = {
+diff --color -ruN a/shared/src/commonMain/kotlin/ua/edu/chnu/kkn/masteringdb/ui/tasks/TasksScreen.kt b/shared/src/commonMain/kotlin/ua/edu/chnu/kkn/masteringdb/ui/tasks/TasksScreen.kt
+--- a/shared/src/commonMain/kotlin/ua/edu/chnu/kkn/masteringdb/ui/tasks/TasksScreen.kt	2026-11-17 15:53:20
++++ b/shared/src/commonMain/kotlin/ua/edu/chnu/kkn/masteringdb/ui/tasks/TasksScreen.kt	2026-11-17 15:53:20
+@@ -31,6 +31,7 @@
+ import androidx.compose.ui.unit.dp
+ import androidx.lifecycle.compose.collectAsStateWithLifecycle
+ import org.koin.compose.viewmodel.koinViewModel
++import ua.edu.chnu.kkn.masteringdb.data.model.Category
+ import ua.edu.chnu.kkn.masteringdb.data.model.Task
+ import ua.edu.chnu.kkn.masteringdb.data.model.TaskFilter
+ 
+@@ -40,6 +41,8 @@
+     TasksContent(
+         state = state,
+         onFilterChange = viewModel::onFilterChange,
++        onCategorySelected = viewModel::onCategorySelected,
++        onManageCategoriesClick = viewModel::onManageCategoriesClick,
+         onAddClick = viewModel::onAddClick,
+         onEditClick = viewModel::onEditClick,
+         onToggleDone = viewModel::onToggleDone,
+@@ -49,12 +52,22 @@
+     state.editor?.let { editor ->
+         TaskEditorDialog(
+             state = editor,
++            categories = state.categories,
+             onTitleChange = viewModel::onEditorTitleChange,
+             onDescriptionChange = viewModel::onEditorDescriptionChange,
++            onCategoryChange = viewModel::onEditorCategoryChange,
+             onSave = viewModel::onEditorSave,
+             onDismiss = viewModel::onEditorDismiss,
+         )
+     }
++    if (state.isManagingCategories) {
++        CategoriesDialog(
++            categories = state.categories,
++            onAdd = viewModel::onAddCategory,
++            onDelete = viewModel::onDeleteCategory,
++            onDismiss = viewModel::onManageCategoriesDismiss,
++        )
++    }
+ }
+ 
+ @OptIn(ExperimentalMaterial3Api::class)
+@@ -62,6 +75,8 @@
+ fun TasksContent(
+     state: TasksUiState,
+     onFilterChange: (TaskFilter) -> Unit,
++    onCategorySelected: (Long?) -> Unit,
++    onManageCategoriesClick: () -> Unit,
+     onAddClick: () -> Unit,
+     onEditClick: (Task) -> Unit,
+     onToggleDone: (Task) -> Unit,
+@@ -84,6 +99,21 @@
+                     )
+                 }
+             }
++            ChipRow {
++                FilterChip(
++                    selected = state.selectedCategoryId == null,
++                    onClick = { onCategorySelected(null) },
++                    label = { Text("All categories") },
++                )
++                state.categories.forEach { category ->
++                    FilterChip(
++                        selected = state.selectedCategoryId == category.id,
++                        onClick = { onCategorySelected(category.id) },
++                        label = { Text("${category.name} (${category.taskCount})") },
++                    )
++                }
++                TextButton(onClick = onManageCategoriesClick) { Text("Manage…") }
++            }
+             Row(
+                 modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+                 verticalAlignment = Alignment.CenterVertically,
+@@ -107,6 +137,7 @@
+                     items(state.tasks, key = Task::id) { task ->
+                         TaskItem(
+                             task = task,
++                            categoryName = state.categoryName(task.categoryId),
+                             onToggleDone = { onToggleDone(task) },
+                             onEdit = { onEditClick(task) },
+                             onDelete = { onDelete(task) },
+@@ -135,6 +166,7 @@
+ @Composable
+ private fun TaskItem(
+     task: Task,
++    categoryName: String?,
+     onToggleDone: () -> Unit,
+     onEdit: () -> Unit,
+     onDelete: () -> Unit,
+@@ -154,6 +186,9 @@
+                 task.description?.let {
+                     Text(text = it, style = MaterialTheme.typography.bodyMedium)
+                 }
++                categoryName?.let {
++                    Text(text = it, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
++                }
+             }
+             TextButton(onClick = onEdit) { Text("Edit") }
+             TextButton(onClick = onDelete) { Text("Delete") }
+@@ -175,12 +210,15 @@
+         TasksContent(
+             state = TasksUiState(
+                 tasks = listOf(
+-                    Task(1, "Buy milk", "2 litres", isDone = false, createdAt = 0),
+-                    Task(2, "Read the Room lecture", null, isDone = true, createdAt = 0),
++                    Task(1, "Buy milk", "2 litres", isDone = false, createdAt = 0, categoryId = 1),
++                    Task(2, "Read the Room lecture", null, isDone = true, createdAt = 0, categoryId = null),
+                 ),
+                 activeCount = 1,
++                categories = listOf(Category(1, "Home", taskCount = 1)),
+             ),
+             onFilterChange = {},
++            onCategorySelected = {},
++            onManageCategoriesClick = {},
+             onAddClick = {},
+             onEditClick = {},
+             onToggleDone = {},
+diff --color -ruN a/shared/src/commonMain/kotlin/ua/edu/chnu/kkn/masteringdb/ui/tasks/TasksUiState.kt b/shared/src/commonMain/kotlin/ua/edu/chnu/kkn/masteringdb/ui/tasks/TasksUiState.kt
+--- a/shared/src/commonMain/kotlin/ua/edu/chnu/kkn/masteringdb/ui/tasks/TasksUiState.kt	2026-11-17 15:53:20
++++ b/shared/src/commonMain/kotlin/ua/edu/chnu/kkn/masteringdb/ui/tasks/TasksUiState.kt	2026-11-17 15:53:20
+@@ -1,5 +1,6 @@
+ package ua.edu.chnu.kkn.masteringdb.ui.tasks
+ 
++import ua.edu.chnu.kkn.masteringdb.data.model.Category
+ import ua.edu.chnu.kkn.masteringdb.data.model.Task
+ import ua.edu.chnu.kkn.masteringdb.data.model.TaskFilter
+ 
+@@ -7,14 +8,20 @@
+     val tasks: List<Task> = emptyList(),
+     val filter: TaskFilter = TaskFilter.ALL,
+     val activeCount: Int = 0,
++    val categories: List<Category> = emptyList(),
++    val selectedCategoryId: Long? = null,
++    val isManagingCategories: Boolean = false,
+     val editor: TaskEditorState? = null,
+-)
++) {
++    fun categoryName(id: Long?): String? = categories.firstOrNull { it.id == id }?.name
++}
+ 
+ /** State of the add/edit dialog; [taskId] is null when creating a new task. */
+ data class TaskEditorState(
+     val taskId: Long? = null,
+     val title: String = "",
+     val description: String = "",
++    val categoryId: Long? = null,
+ ) {
+     val canSave: Boolean get() = title.isNotBlank()
+ }
+diff --color -ruN a/shared/src/commonMain/kotlin/ua/edu/chnu/kkn/masteringdb/ui/tasks/TasksViewModel.kt b/shared/src/commonMain/kotlin/ua/edu/chnu/kkn/masteringdb/ui/tasks/TasksViewModel.kt
+--- a/shared/src/commonMain/kotlin/ua/edu/chnu/kkn/masteringdb/ui/tasks/TasksViewModel.kt	2026-11-17 15:53:20
++++ b/shared/src/commonMain/kotlin/ua/edu/chnu/kkn/masteringdb/ui/tasks/TasksViewModel.kt	2026-11-17 15:53:20
+@@ -15,15 +15,19 @@
+ import kotlinx.coroutines.launch
+ import ua.edu.chnu.kkn.masteringdb.data.model.Task
+ import ua.edu.chnu.kkn.masteringdb.data.model.TaskFilter
++import ua.edu.chnu.kkn.masteringdb.data.repository.CategoryRepository
+ import ua.edu.chnu.kkn.masteringdb.data.repository.TaskRepository
+ 
+ class TasksViewModel(
+     private val taskRepository: TaskRepository,
++    private val categoryRepository: CategoryRepository,
+ ) : ViewModel() {
+ 
+     /** UI-only state that is not stored in the database. */
+     private data class ScreenState(
+         val filter: TaskFilter = TaskFilter.ALL,
++        val selectedCategoryId: Long? = null,
++        val isManagingCategories: Boolean = false,
+         val editor: TaskEditorState? = null,
+     )
+ 
+@@ -39,11 +43,15 @@
+         screen,
+         tasks,
+         taskRepository.observeActiveCount(),
+-    ) { screen, tasks, activeCount ->
++        categoryRepository.observeCategories(),
++    ) { screen, tasks, activeCount, categories ->
+         TasksUiState(
+-            tasks = tasks,
++            tasks = tasks.filter { screen.selectedCategoryId == null || it.categoryId == screen.selectedCategoryId },
+             filter = screen.filter,
+             activeCount = activeCount,
++            categories = categories,
++            selectedCategoryId = screen.selectedCategoryId,
++            isManagingCategories = screen.isManagingCategories,
+             editor = screen.editor,
+         )
+     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), TasksUiState())
+@@ -54,10 +62,14 @@
+         screen.update { it.copy(filter = filter) }
+     }
+ 
++    fun onCategorySelected(categoryId: Long?) {
++        screen.update { it.copy(selectedCategoryId = categoryId) }
++    }
++
+     // ---------- Task editor ----------
+ 
+     fun onAddClick() {
+-        screen.update { it.copy(editor = TaskEditorState()) }
++        screen.update { it.copy(editor = TaskEditorState(categoryId = it.selectedCategoryId)) }
+     }
+ 
+     fun onEditClick(task: Task) {
+@@ -65,6 +77,7 @@
+             taskId = task.id,
+             title = task.title,
+             description = task.description.orEmpty(),
++            categoryId = task.categoryId,
+         )
+         screen.update { it.copy(editor = editor) }
+     }
+@@ -73,6 +86,8 @@
+ 
+     fun onEditorDescriptionChange(description: String) = updateEditor { it.copy(description = description) }
+ 
++    fun onEditorCategoryChange(categoryId: Long?) = updateEditor { it.copy(categoryId = categoryId) }
++
+     fun onEditorDismiss() {
+         screen.update { it.copy(editor = null) }
+     }
+@@ -85,9 +100,9 @@
+         val description = editor.description.trim().ifEmpty { null }
+         viewModelScope.launch {
+             if (editor.taskId == null) {
+-                taskRepository.addTask(title, description)
++                taskRepository.addTask(title, description, editor.categoryId)
+             } else {
+-                taskRepository.updateTask(editor.taskId, title, description)
++                taskRepository.updateTask(editor.taskId, title, description, editor.categoryId)
+             }
+         }
+     }
+@@ -108,5 +123,26 @@
+ 
+     fun onClearCompleted() {
+         viewModelScope.launch { taskRepository.clearCompleted() }
++    }
++
++    // ---------- Categories ----------
++
++    fun onManageCategoriesClick() {
++        screen.update { it.copy(isManagingCategories = true) }
++    }
++
++    fun onManageCategoriesDismiss() {
++        screen.update { it.copy(isManagingCategories = false) }
++    }
++
++    fun onAddCategory(name: String) {
++        val trimmed = name.trim()
++        if (trimmed.isEmpty()) return
++        viewModelScope.launch { categoryRepository.addCategory(trimmed) }
++    }
++
++    fun onDeleteCategory(categoryId: Long) {
++        screen.update { if (it.selectedCategoryId == categoryId) it.copy(selectedCategoryId = null) else it }
++        viewModelScope.launch { categoryRepository.deleteCategory(categoryId) }
+     }
+ }
+diff --color -ruN a/shared/src/commonTest/kotlin/ua/edu/chnu/kkn/masteringdb/ui/tasks/FakeRepositories.kt b/shared/src/commonTest/kotlin/ua/edu/chnu/kkn/masteringdb/ui/tasks/FakeRepositories.kt
+--- a/shared/src/commonTest/kotlin/ua/edu/chnu/kkn/masteringdb/ui/tasks/FakeRepositories.kt	2026-11-17 15:53:20
++++ b/shared/src/commonTest/kotlin/ua/edu/chnu/kkn/masteringdb/ui/tasks/FakeRepositories.kt	2026-11-17 15:53:20
+@@ -2,15 +2,19 @@
+ 
+ import kotlinx.coroutines.flow.Flow
+ import kotlinx.coroutines.flow.MutableStateFlow
++import kotlinx.coroutines.flow.combine
+ import kotlinx.coroutines.flow.map
+ import kotlinx.coroutines.flow.update
++import ua.edu.chnu.kkn.masteringdb.data.model.Category
+ import ua.edu.chnu.kkn.masteringdb.data.model.Task
+ import ua.edu.chnu.kkn.masteringdb.data.model.TaskFilter
++import ua.edu.chnu.kkn.masteringdb.data.repository.CategoryRepository
+ import ua.edu.chnu.kkn.masteringdb.data.repository.TaskRepository
+ 
+ /** In-memory data shared by the fake repositories, mimicking the database. */
+ class FakeStore {
+     val tasks = MutableStateFlow(emptyList<Task>())
++    val categories = MutableStateFlow(emptyList<Pair<Long, String>>())
+     var nextId = 1L
+ }
+ 
+@@ -26,14 +30,14 @@
+ 
+     override fun observeActiveCount(): Flow<Int> = store.tasks.map { list -> list.count { !it.isDone } }
+ 
+-    override suspend fun addTask(title: String, description: String?): Long {
++    override suspend fun addTask(title: String, description: String?, categoryId: Long?): Long {
+         val id = store.nextId++
+-        store.tasks.update { it + Task(id, title, description, isDone = false, createdAt = id) }
++        store.tasks.update { it + Task(id, title, description, isDone = false, createdAt = id, categoryId = categoryId) }
+         return id
+     }
+ 
+-    override suspend fun updateTask(id: Long, title: String, description: String?) =
+-        updateTask(id) { it.copy(title = title, description = description) }
++    override suspend fun updateTask(id: Long, title: String, description: String?, categoryId: Long?) =
++        updateTask(id) { it.copy(title = title, description = description, categoryId = categoryId) }
+ 
+     override suspend fun setDone(id: Long, done: Boolean) = updateTask(id) { it.copy(isDone = done) }
+ 
+@@ -43,4 +47,21 @@
+ 
+     private fun updateTask(id: Long, transform: (Task) -> Task) =
+         store.tasks.update { list -> list.map { if (it.id == id) transform(it) else it } }
++}
++
++class FakeCategoryRepository(private val store: FakeStore = FakeStore()) : CategoryRepository {
++
++    override fun observeCategories(): Flow<List<Category>> =
++        combine(store.categories, store.tasks) { categories, tasks ->
++            categories.map { (id, name) -> Category(id, name, taskCount = tasks.count { it.categoryId == id }) }
++        }
++
++    override suspend fun addCategory(name: String) {
++        store.categories.update { it + (store.nextId++ to name) }
++    }
++
++    override suspend fun deleteCategory(id: Long) {
++        store.categories.update { list -> list.filterNot { it.first == id } }
++        store.tasks.update { list -> list.map { if (it.categoryId == id) it.copy(categoryId = null) else it } }
++    }
+ }
+diff --color -ruN a/shared/src/commonTest/kotlin/ua/edu/chnu/kkn/masteringdb/ui/tasks/TasksViewModelTest.kt b/shared/src/commonTest/kotlin/ua/edu/chnu/kkn/masteringdb/ui/tasks/TasksViewModelTest.kt
+--- a/shared/src/commonTest/kotlin/ua/edu/chnu/kkn/masteringdb/ui/tasks/TasksViewModelTest.kt	2026-11-17 15:53:20
++++ b/shared/src/commonTest/kotlin/ua/edu/chnu/kkn/masteringdb/ui/tasks/TasksViewModelTest.kt	2026-11-17 15:53:20
+@@ -20,6 +20,7 @@
+ 
+     private val store = FakeStore()
+     private val taskRepository = FakeTaskRepository(store)
++    private val categoryRepository = FakeCategoryRepository(store)
+ 
+     @BeforeTest
+     fun setUp() = Dispatchers.setMain(UnconfinedTestDispatcher())
+@@ -28,7 +29,7 @@
+     fun tearDown() = Dispatchers.resetMain()
+ 
+     private fun TestScope.createViewModel(): TasksViewModel {
+-        val viewModel = TasksViewModel(taskRepository)
++        val viewModel = TasksViewModel(taskRepository, categoryRepository)
+         backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { viewModel.uiState.collect {} }
+         return viewModel
+     }
+@@ -50,8 +51,8 @@
+     @Test
+     fun filterShowsOnlyMatchingTasks() = runTest {
+         val viewModel = createViewModel()
+-        val id = taskRepository.addTask("Done one", null)
+-        taskRepository.addTask("Active one", null)
++        val id = taskRepository.addTask("Done one", null, null)
++        taskRepository.addTask("Active one", null, null)
+         taskRepository.setDone(id, true)
+ 
+         viewModel.onFilterChange(TaskFilter.DONE)
+@@ -59,4 +60,20 @@
+         assertEquals(listOf("Done one"), viewModel.uiState.value.tasks.map { it.title })
+     }
+ 
++    @Test
++    fun categoryFilterAndNewTaskDefaultCategory() = runTest {
++        val viewModel = createViewModel()
++        viewModel.onAddCategory("Work")
++        val work = viewModel.uiState.value.categories.single()
++        taskRepository.addTask("Unrelated", null, null)
++
++        viewModel.onCategorySelected(work.id)
++        viewModel.onAddClick()
++        viewModel.onEditorTitleChange("Report")
++        viewModel.onEditorSave()
++
++        val state = viewModel.uiState.value
++        assertEquals(listOf("Report"), state.tasks.map { it.title })
++        assertEquals(1, state.categories.single().taskCount)
++    }
+ }
+diff --color -ruN a/shared/src/jvmTest/kotlin/ua/edu/chnu/kkn/masteringdb/data/local/CategoryDaoTest.kt b/shared/src/jvmTest/kotlin/ua/edu/chnu/kkn/masteringdb/data/local/CategoryDaoTest.kt
+--- a/shared/src/jvmTest/kotlin/ua/edu/chnu/kkn/masteringdb/data/local/CategoryDaoTest.kt	1970-01-01 03:00:00
++++ b/shared/src/jvmTest/kotlin/ua/edu/chnu/kkn/masteringdb/data/local/CategoryDaoTest.kt	2026-11-17 15:53:20
+@@ -0,0 +1,55 @@
++package ua.edu.chnu.kkn.masteringdb.data.local
++
++import androidx.room3.Room
++import androidx.sqlite.driver.bundled.BundledSQLiteDriver
++import kotlin.test.AfterTest
++import kotlin.test.BeforeTest
++import kotlin.test.Test
++import kotlin.test.assertEquals
++import kotlin.test.assertNull
++import kotlinx.coroutines.flow.first
++import kotlinx.coroutines.test.runTest
++import ua.edu.chnu.kkn.masteringdb.data.local.entity.CategoryEntity
++import ua.edu.chnu.kkn.masteringdb.data.local.entity.TaskEntity
++
++class CategoryDaoTest {
++    private lateinit var db: AppDatabase
++
++    @BeforeTest
++    fun setUp() {
++        db = Room.inMemoryDatabaseBuilder<AppDatabase>()
++            .setDriver(BundledSQLiteDriver())
++            .build()
++    }
++
++    @AfterTest
++    fun tearDown() = db.close()
++
++    @Test
++    fun categoryWithTasks() = runTest {
++        val work = db.categoryDao().insert(CategoryEntity(name = "Work"))
++        db.taskDao().insert(TaskEntity(title = "Report", createdAt = 0, categoryId = work))
++        db.taskDao().insert(TaskEntity(title = "Meeting", createdAt = 1, categoryId = work))
++        db.taskDao().insert(TaskEntity(title = "No category", createdAt = 2))
++
++        val result = db.categoryDao().observeCategoryWithTasks(work).first()
++        assertEquals("Work", result?.category?.name)
++        assertEquals(setOf("Report", "Meeting"), result?.tasks?.map { it.title }?.toSet())
++    }
++
++    @Test
++    fun deletingCategorySetsTaskCategoryToNull() = runTest {
++        val home = db.categoryDao().insert(CategoryEntity(name = "Home"))
++        val taskId = db.taskDao().insert(TaskEntity(title = "Clean", createdAt = 0, categoryId = home))
++
++        db.categoryDao().deleteById(home)
++
++        assertNull(db.taskDao().getById(taskId)?.categoryId)
++    }
++
++    @Test
++    fun duplicateCategoryNameIsIgnored() = runTest {
++        db.categoryDao().insert(CategoryEntity(name = "Home"))
++        assertEquals(-1, db.categoryDao().insert(CategoryEntity(name = "Home")))
++    }
++}
+diff --color -ruN a/shared/src/jvmTest/kotlin/ua/edu/chnu/kkn/masteringdb/data/local/MigrationTest.kt b/shared/src/jvmTest/kotlin/ua/edu/chnu/kkn/masteringdb/data/local/MigrationTest.kt
+--- a/shared/src/jvmTest/kotlin/ua/edu/chnu/kkn/masteringdb/data/local/MigrationTest.kt	1970-01-01 03:00:00
++++ b/shared/src/jvmTest/kotlin/ua/edu/chnu/kkn/masteringdb/data/local/MigrationTest.kt	2026-11-17 15:53:20
+@@ -0,0 +1,54 @@
++package ua.edu.chnu.kkn.masteringdb.data.local
++
++import androidx.room3.testing.MigrationTestHelper
++import androidx.sqlite.SQLiteConnection
++import androidx.sqlite.driver.bundled.BundledSQLiteDriver
++import androidx.sqlite.execSQL
++import java.nio.file.Files
++import java.nio.file.Path
++import kotlin.test.Test
++import kotlin.test.assertEquals
++import kotlin.test.assertTrue
++import kotlinx.coroutines.test.runTest
++import org.junit.Rule
++
++/**
++ * Creates a database of an old version from `shared/schemas`, runs the migrations
++ * and lets Room validate the resulting schema against the expected one.
++ * Rows are inserted with raw SQL: DAOs always expect the latest schema.
++ */
++class MigrationTest {
++
++    @get:Rule
++    val helper = MigrationTestHelper(
++        schemaDirectoryPath = Path.of("schemas"),
++        databasePath = Files.createTempDirectory("migration-test").resolve("test.db"),
++        driver = BundledSQLiteDriver(),
++        databaseClass = AppDatabase::class,
++        databaseFactory = { AppDatabaseConstructor.initialize() },
++    )
++
++    @Test
++    fun migrate1To2_keepsTasksWithoutCategory() = runTest {
++        helper.createDatabase(1).apply {
++            execSQL("INSERT INTO tasks (id, title, description, is_done, created_at) VALUES (1, 'Buy milk', '2 l', 0, 100)")
++            close()
++        }
++
++        val connection = helper.runMigrationsAndValidate(2)
++
++        connection.querySingleRow("SELECT title, description, category_id FROM tasks WHERE id = 1") {
++            assertEquals("Buy milk", getText(0))
++            assertEquals("2 l", getText(1))
++            assertTrue(isNull(2))
++        }
++        connection.close()
++    }
++}
++
++internal fun SQLiteConnection.querySingleRow(sql: String, block: androidx.sqlite.SQLiteStatement.() -> Unit) {
++    prepare(sql).use { statement ->
++        assertTrue(statement.step(), "Expected a row for: $sql")
++        statement.block()
++    }
++}
